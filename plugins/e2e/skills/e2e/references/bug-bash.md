@@ -70,17 +70,6 @@ import { gateway } from 'ai';
 import base from './e2e.config.ts';
 
 const shared: E2EConfig = base;
-const inheritedTests = shared.tests ?? 'tests/**/*.e2e.ts';
-const bugBashTests = Array.isArray(inheritedTests) ? inheritedTests : [inheritedTests];
-const normalizeGlob = (glob: string) => {
-  const excluded = glob.startsWith('!');
-  const pattern = excluded ? glob.slice(1) : glob;
-  const segments = pattern.split('/');
-  // Keep invalid absolute and trailing-separator patterns intact so the runner can report them.
-  if (pattern.startsWith('/') || segments.at(-1) === '' || segments.at(-1) === '.') return glob;
-  const normalized = segments.filter((segment) => segment !== '' && segment !== '.').join('/');
-  return excluded ? `!${normalized}` : normalized;
-};
 
 // What the local app cannot do, plus the explorer's blind spots (step 5's artifact bucket).
 const context =
@@ -91,9 +80,8 @@ const persona = { model: gateway('openai/gpt-6-luna-fast'), maxSteps: 40, maxMod
 export default {
   ...shared,
   // The project's tests, so a repro can use its setup tests' sessions, plus the repro tests from step 6.
-  // Drop this exclusion even when dot or empty path segments vary; exclusions win regardless of order.
   tests: [
-    ...bugBashTests.filter((glob) => normalizeGlob(glob) !== '!tests/bugbash/**'),
+    ...[shared.tests ?? 'tests/**/*.e2e.ts'].flat().filter((glob) => !glob.startsWith('!tests/bugbash/')),
     'tests/bugbash/**/*.e2e.ts',
   ],
   // The app already runs: no command.
@@ -114,13 +102,6 @@ export default {
   },
 } satisfies E2EConfig;
 ```
-
-The example removes `!tests/bugbash/**`, including equivalent spellings such as
-`!./tests/bugbash/**`, `!././tests/bugbash/**`, and `!tests//bugbash/**`. If the
-base uses a broader exclusion that also matches this directory, narrow or
-remove that entry in this config too. Keep unrelated exclusions unchanged.
-Adding the bug-bash glob after an exclusion does not bring the repros back:
-exclusions apply regardless of order.
 
 Set `BUGBASH_PASSWORD` to 6 or more characters first, or the config fails to
 load. Pass `--config e2e.bugbash.config.ts` to every command below, and
