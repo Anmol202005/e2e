@@ -78,14 +78,19 @@ const matchesSegment = (pattern: string, name: string) => {
     .replace(/\?/g, '[^/]');
   return new RegExp(`^${source}$`, 'u').test(name);
 };
-const reachesRepro = (parts: string[], pattern = 0, repro = 0): boolean => {
-  if (repro === reproParts.length) return pattern < parts.length;
+const hidesReproFiles = (parts: string[], pattern = 0, repro = 0): boolean => {
+  if (repro === reproParts.length) {
+    const remaining = parts.slice(pattern);
+    // Drop exclusions that cover every repro, or select repro files directly
+    // under bugbash. Keep explicit nested paths such as archived/** intact.
+    return remaining[0] === '**' || (remaining.length === 1 && remaining[0]!.endsWith('.e2e.ts'));
+  }
   const segment = parts[pattern];
   if (segment === undefined) return false;
   if (segment === '**') {
-    return reachesRepro(parts, pattern + 1, repro) || reachesRepro(parts, pattern, repro + 1);
+    return hidesReproFiles(parts, pattern + 1, repro) || hidesReproFiles(parts, pattern, repro + 1);
   }
-  return matchesSegment(segment, reproParts[repro]!) && reachesRepro(parts, pattern + 1, repro + 1);
+  return matchesSegment(segment, reproParts[repro]!) && hidesReproFiles(parts, pattern + 1, repro + 1);
 };
 const hidesRepro = (glob: string) => {
   if (!glob.startsWith('!')) return false;
@@ -109,7 +114,7 @@ const hidesRepro = (glob: string) => {
   ) {
     return false;
   }
-  return reachesRepro(parts);
+  return hidesReproFiles(parts);
 };
 
 // What the local app cannot do, plus the explorer's blind spots (step 5's artifact bucket).
