@@ -70,6 +70,47 @@ import { gateway } from 'ai';
 import base from './e2e.config.ts';
 
 const shared: E2EConfig = base;
+const reproParts = ['tests', 'bugbash'];
+const matchesSegment = (pattern: string, name: string) => {
+  const source = pattern
+    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+    .replace(/\*/g, '[^/]*')
+    .replace(/\?/g, '[^/]');
+  return new RegExp(`^${source}$`, 'u').test(name);
+};
+const reachesRepro = (parts: string[], pattern = 0, repro = 0): boolean => {
+  if (repro === reproParts.length) return pattern < parts.length;
+  const segment = parts[pattern];
+  if (segment === undefined) return false;
+  if (segment === '**') {
+    return reachesRepro(parts, pattern + 1, repro) || reachesRepro(parts, pattern, repro + 1);
+  }
+  return matchesSegment(segment, reproParts[repro]!) && reachesRepro(parts, pattern + 1, repro + 1);
+};
+const hidesRepro = (glob: string) => {
+  if (!glob.startsWith('!')) return false;
+  const path = glob.slice(1);
+  const written = path.split('/');
+  const parts = written.filter((segment) => segment !== '' && segment !== '.');
+  // Preserve invalid patterns for the runner to report instead of silently dropping them.
+  if (
+    path.startsWith('/') ||
+    /^[A-Za-z]:\//.test(path) ||
+    path.includes('\\') ||
+    /[{}]/.test(path) ||
+    /[[\]]/.test(path) ||
+    /[?*+@!]\(/.test(path) ||
+    written.at(-1) === '' ||
+    written.at(-1) === '.' ||
+    parts.length === 0 ||
+    parts[0]!.startsWith('!') ||
+    parts.includes('..') ||
+    parts.some((segment) => segment.includes('**') && segment !== '**')
+  ) {
+    return false;
+  }
+  return reachesRepro(parts);
+};
 
 // What the local app cannot do, plus the explorer's blind spots (step 5's artifact bucket).
 const context =
@@ -81,7 +122,7 @@ export default {
   ...shared,
   // The project's tests, so a repro can use its setup tests' sessions, plus the repro tests from step 6.
   tests: [
-    ...[shared.tests ?? 'tests/**/*.e2e.ts'].flat().filter((glob) => !glob.startsWith('!tests/bugbash/')),
+    ...[shared.tests ?? 'tests/**/*.e2e.ts'].flat().filter((glob) => !hidesRepro(glob)),
     'tests/bugbash/**/*.e2e.ts',
   ],
   // The app already runs: no command.
