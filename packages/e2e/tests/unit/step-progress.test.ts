@@ -155,7 +155,7 @@ describe('StepRecorder late secret redaction', () => {
       steps.recordAppEvent({ kind: 'log', entry: { source: 'console', level: 'info', text: `${'x'.repeat(291)}${value}${'y'.repeat(30)}` } });
       steps.attachAgentDetails({
         explanation: `provider returned ${value}`,
-        turns: [{ index: 1, calls: [], outcome: `${'x'.repeat(20)}${prefix}…[truncated]` }],
+        turns: [{ index: 1, calls: [], outcome: `${'x'.repeat(20)}${prefix}…[truncated] suffix ${value}` }],
       });
     });
 
@@ -167,7 +167,7 @@ describe('StepRecorder late secret redaction', () => {
     expect(JSON.stringify(recorded)).not.toContain('<secret:early>');
     expect(recorded.events[0]?.detail).toContain('<secret:late>…');
     expect(recorded.events[0]?.detail).not.toContain(prefix);
-    expect(recorded.turns?.[0]?.outcome).toBe(`${'x'.repeat(20)}<secret:late>…[truncated]`);
+    expect(recorded.turns?.[0]?.outcome).toBe(`${'x'.repeat(20)}<secret:late>…[truncated] suffix <secret:late>`);
     expect(steps.appLog()[0]?.text).toContain('<secret:late>…');
     expect(steps.appLog()[0]?.text).not.toContain(prefix);
   });

@@ -346,7 +346,8 @@ const MAX_QUOTED_LABEL_CHARS = 80;
 /** Rechecks SDK-clipped turn prose against late values before any earlier marker can split a longer secret. */
 function redactTruncatedTurnText(text: string, redact: (text: string) => string, redactCut: ((text: string) => string) | undefined): string {
   if (redactCut === undefined || !text.includes('…[truncated]')) return redact(text);
-  return text.replace(/(.*?)(…\[truncated\])/gs, (_match, prefix: string, marker: string) => `${redactCut(prefix)}${marker}`);
+  const cutAware = text.replace(/(.*?)(…\[truncated\])/gs, (_match, prefix: string, marker: string) => `${redactCut(prefix)}${marker}`);
+  return redact(cutAware);
 }
 
 /** The runner's bounded fields keep a terminal ellipsis; remove it while matching the cut, then restore it. */
