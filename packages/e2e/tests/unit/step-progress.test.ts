@@ -2,7 +2,7 @@
 
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { StepRecorder, type StepProgress } from '../../src/run/steps.ts';
+import { captureStepTurnText, StepRecorder, withStepTurnSources, type StepProgress } from '../../src/run/steps.ts';
 import { AgentError } from '../../src/agent/error.ts';
 import { SecretLedger } from '../../src/internal/redact.ts';
 
@@ -106,7 +106,7 @@ describe('StepRecorder progress identity', () => {
     const heard: StepProgress[] = [];
     const steps = new StepRecorder('attempt', {
       onProgress: (progress) => heard.push(progress),
-      redact: (text) => text.replaceAll('private-value', '[REDACTED]'),
+      redactor: { redact: (text) => text.replaceAll('private-value', '[REDACTED]'), revision: () => 0 },
     });
     await expect(steps.run('agent', 'agent.act', 'login', async () => {
       steps.attachAgentDetails({ explanation: 'private-value is unavailable' });
@@ -127,7 +127,7 @@ describe('StepRecorder progress identity', () => {
     const heard: StepProgress[] = [];
     const steps = new StepRecorder('attempt', {
       onProgress: (progress) => heard.push(progress),
-      redact: (text) => text.replaceAll('private-value', '[REDACTED]'),
+      redactor: { redact: (text) => text.replaceAll('private-value', '[REDACTED]'), revision: () => 0 },
     });
     await steps.run('agent', 'agent.act', 'inspect private-value', async () => undefined);
     expect(steps.all()[0]?.label).toBe('inspect [REDACTED]');
@@ -143,7 +143,7 @@ describe('StepRecorder late secret redaction', () => {
     const value = 'late-secret-0123456789-abcdefghijklmnop';
     const prefix = value.slice(0, 8);
     const ledger = new SecretLedger([['early', value.slice(0, 8)]]);
-    const steps = new StepRecorder('attempt', { redact: ledger.redact, redactCut: ledger.redactCut });
+    const steps = new StepRecorder('attempt', { redactor: { redact: ledger.redact, revision: () => ledger.version } });
     await steps.run('agent', 'agent.act', 'inspect', async () => {
       steps.recordEvent({
         kind: 'engine',
@@ -155,20 +155,33 @@ describe('StepRecorder late secret redaction', () => {
       steps.recordAppEvent({ kind: 'log', entry: { source: 'console', level: 'info', text: `${'x'.repeat(291)}${value}${'y'.repeat(30)}` } });
       steps.attachAgentDetails({
         explanation: `provider returned ${value}`,
-        turns: [{ index: 1, calls: [], outcome: `${'x'.repeat(20)}${prefix}…[truncated] suffix ${value}` }],
+        turns: [withStepTurnSources(
+          { index: 1, calls: [], outcome: `${'x'.repeat(20)}…[truncated]` },
+          { calls: [], outcome: captureStepTurnText(`${'x'.repeat(20)}${value}${'y'.repeat(30)}`, 40) },
+        )],
       });
     });
 
     ledger.register('late', value);
-    expect(ledger.redactCut(`${'x'.repeat(291)}${prefix}`)).toBe(`${'x'.repeat(291)}<secret:late>`);
-
     const recorded = steps.all()[0]!;
     expect(recorded.explanation).toBe('provider returned <secret:late>');
     expect(JSON.stringify(recorded)).not.toContain('<secret:early>');
-    expect(recorded.events[0]?.detail).toContain('<secret:late>…');
+    expect(recorded.events[0]?.detail).toHaveLength(300);
     expect(recorded.events[0]?.detail).not.toContain(prefix);
-    expect(recorded.turns?.[0]?.outcome).toBe(`${'x'.repeat(20)}<secret:late>…[truncated] suffix <secret:late>`);
-    expect(steps.appLog()[0]?.text).toContain('<secret:late>…');
+    expect(recorded.turns?.[0]?.outcome).toContain('<secret:late>');
+    expect(recorded.turns?.[0]?.outcome).not.toContain(prefix);
+    expect(steps.appLog()[0]?.text).toHaveLength(300);
     expect(steps.appLog()[0]?.text).not.toContain(prefix);
+  });
+
+  it('treats a literal truncation marker as ordinary text and never guesses a secret prefix', async () => {
+    const value = 'abc123-secret-value';
+    const ledger = new SecretLedger([['whole', value]]);
+    const steps = new StepRecorder('attempt', { redactor: { redact: ledger.redact, revision: () => ledger.version } });
+    await steps.run('agent', 'agent.act', 'inspect', async () => {
+      steps.attachAgentDetails({ turns: [{ index: 1, calls: [], outcome: `literal …[truncated] ${value}` }] });
+    });
+    ledger.register('similar', 'abc123-unrelated');
+    expect(steps.all()[0]?.turns?.[0]?.outcome).toBe('literal …[truncated] <secret:whole>');
   });
 });

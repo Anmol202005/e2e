@@ -16,7 +16,6 @@
  * executor's verdict onto the runner's error taxonomy.
  */
 
-import type { StepTurn } from '../run/steps.ts';
 import { writeFileSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -42,12 +41,6 @@ import { OperationQueue } from './operation-queue.ts';
 import { StepAccounting } from './step-accounting.ts';
 import { failedStepOutcome, StepTraceSession, type StepCacheHost, type StepOutcome } from './step-cache.ts';
 import type { ParamTemplate } from '../cache/template.ts';
-
-/** Rechecks bounded transcript segments against values the session resolved after the model turn. */
-function redactTruncatedText(text: string, redact: (text: string) => string, redactCut: (text: string) => string): string {
-  const cutAware = text.replace(/(.*?)(…\[truncated\])/gs, (_match, prefix: string, marker: string) => `${redactCut(prefix)}${marker}`);
-  return redact(cutAware);
-}
 
 /** What a dispatch needs of the agent a step runs with; an interactive step supplies its own. */
 export type DispatchAgent = Pick<AgentSelection, 'name' | 'config' | 'executor' | 'agentContext'>;
@@ -208,7 +201,6 @@ class ActDispatch {
   private readonly stepIndex: number;
   private explanation: string | undefined;
   private transcript: string | undefined;
-  private turns: StepTurn[] | undefined;
   private sdkModel: ModelInstance | undefined;
   private sdkModelResolved = false;
 
@@ -323,9 +315,7 @@ class ActDispatch {
         }
       },
       attachTurns: (turns) => {
-        // Keep this bounded record private until StepRecorder materializes it
-        // with the latest session ledger; a provider may resolve later.
-        this.turns = turns.map((turn) => ({ index: turn.index, calls: [...turn.calls], outcome: turn.outcome }));
+        this.runtime.steps.attachTurns(turns);
       },
       attachScreenshot: (pixels, label) => this.attachScreenshot(pixels, label),
       actions: this.dispatcher.actions,
@@ -477,7 +467,6 @@ class ActDispatch {
       ...(this.explanation !== undefined ? { explanation: this.explanation } : {}),
       ...(this.spec.vision === 'only' && this.feed.pixelsShown ? { visionOnly: true } : {}),
       ...(latest !== undefined ? { observationRevision: latest.revision } : {}),
-      ...(this.turns !== undefined && this.turns.length > 0 ? { turns: this.turns } : {}),
       ...this.feed.visionReport(),
     });
     this.writeTranscript();
@@ -534,7 +523,7 @@ class ActDispatch {
     try {
       // Model prose and project-tool output are not model input, but they
       // are a log: the same redactor that guards the tree guards the file.
-      writeFileSync(join(this.runtime.artifacts.dir, name), redactTruncatedText(this.transcript, this.runtime.redact, this.runtime.redactCut), 'utf8');
+      writeFileSync(join(this.runtime.artifacts.dir, name), this.runtime.redact(this.transcript), 'utf8');
       this.runtime.steps.attachArtifact(this.runtime.artifacts.register('log', name));
     } catch {
       // The transcript is best-effort debug detail; never fail the step for it.

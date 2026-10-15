@@ -9,7 +9,7 @@
 
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { RunOutcome } from '../../src/run/runner.ts';
 import { startFixtureApp, type FixtureApp } from '../helpers/fixture-app.ts';
 import { fakeCalls, installFakeModel, judgment } from '../helpers/fake-model.ts';
@@ -33,12 +33,15 @@ test('echoes a secret across the observation limits', async ({ app, agent, scree
 });
 `;
 
-describe('secrets cut short by observation limits', () => {
+describe.each([
+  { kind: 'static', password: SECRET },
+  { kind: 'provider', password: () => SECRET },
+])('secrets cut short by observation limits ($kind credential)', ({ password }) => {
   let app: FixtureApp;
   let outcome: RunOutcome;
   let project: FixtureProject;
 
-  beforeAll(async () => {
+  beforeEach(async () => {
     app = await startFixtureApp();
     const model = installFakeModel(() => judgment(true, 'the echo is shown'));
     ({ outcome, project } = await runProject(
@@ -48,16 +51,17 @@ describe('secrets cut short by observation limits', () => {
         config: {
           tests: 'tests/**/*.e2e.ts',
           agents: { default: { model } },
-          credentials: { member: { username: 'ada', password: () => SECRET } },
+          credentials: { member: { username: 'ada', password } },
         },
       },
     ));
   }, 120_000);
 
   afterAll(async () => {
-    project?.cleanup();
     await app?.close();
   });
+
+  afterEach(() => project?.cleanup());
 
   it('keeps the cut fragment out of the model input and still cuts a plain value', () => {
     const observation = fakeCalls.map((call) => call.observation).join('\n');
@@ -76,7 +80,7 @@ describe('secrets cut short by observation limits', () => {
     expect(screenText).toContain(`${CONTROL_KEPT}"`);
     const report = JSON.stringify(outcome.report);
     const reportFile = readFileSync(path.join(project.dir, '.e2e', 'report.json'), 'utf8');
-    expect(attempt.appLog?.filter(({ text }) => text.includes('<secret:member.password>')).length).toBeGreaterThanOrEqual(2);
+    expect(attempt.appLog?.some(({ text }) => text.includes('<secret:member.password>'))).toBe(true);
     const contents = contentsUnder(path.join(project.dir, '.e2e'));
     for (const fragment of [FRAGMENT, UPPER_FRAGMENT]) {
       expect(screenText).not.toContain(fragment);

@@ -147,10 +147,10 @@ instruction, the strings in `agent.act` params, `agentContext`, and an
 `e2e explore` goal. A plain string isn't a secret fill, so screenshots stay
 on.
 
-When a provider-backed value resolves after a step or app-log entry was
-recorded, the runner rechecks those stored records when it returns `steps()`
-or builds the run report. The same cut-text rule below catches a prefix left
-at an SDK or runner length limit.
+Step records and app-log entries are redacted before their text is shortened
+for display. If a provider-backed secret resolves later, reports use the
+resolved value when they include those records. Progress already sent to a
+reporter is a point-in-time update and is not rewritten.
 
 | Rule | Detail |
 | --- | --- |
