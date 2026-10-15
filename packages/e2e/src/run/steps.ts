@@ -361,6 +361,7 @@ interface StoredTurn {
 interface StepSources {
   readonly label: StoredText;
   error?: E2EError;
+  cacheDetail?: StoredText;
   explanation?: StoredText;
   turns?: readonly StoredTurn[];
   screen?: {
@@ -780,7 +781,12 @@ export class StepRecorder {
     if (current === undefined) return;
     if (details.metrics !== undefined) current.metrics = details.metrics;
     if (details.model !== undefined) current.model = details.model;
-    if (details.cache !== undefined) current.cache = details.cache;
+    if (details.cache !== undefined) {
+      const { detail, ...cache } = details.cache;
+      current.cache = cache;
+      if (detail === undefined) delete this.sources.get(current.id)!.cacheDetail;
+      else this.sources.get(current.id)!.cacheDetail = this.captureText(detail, undefined, 'plain');
+    }
     if (details.observationRevision !== undefined) {
       current.observationRevision = details.observationRevision;
     }
@@ -904,6 +910,9 @@ export class StepRecorder {
       ...record,
       label: sources === undefined ? record.label : this.renderText(sources.label),
       events,
+      ...(sources?.cacheDetail === undefined || record.cache === undefined
+        ? {}
+        : { cache: { ...record.cache, detail: this.renderText(sources.cacheDetail) } }),
       ...(screen === undefined ? {} : { screen }),
       ...(sources?.explanation === undefined ? {} : { explanation: this.renderText(sources.explanation) }),
       ...(sources?.turns === undefined ? {} : { turns: sources.turns.map((turn) => this.renderTurn(turn)) }),

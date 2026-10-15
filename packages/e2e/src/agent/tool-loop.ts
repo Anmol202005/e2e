@@ -713,7 +713,9 @@ class LoopRun {
     this.turns.push({
       index: this.turnsUsed,
       calls: calls.map((call) => truncate(call, MAX_TURN_CALL_CHARS)),
-      outcome: outcomes.map((part) => truncate(part, MAX_TURN_RESULT_CHARS)).join('\n'),
+      outcome: outcomes
+        .map((part) => truncate(part, part.startsWith('assistant: ') ? MAX_TURN_TEXT_CHARS : MAX_TURN_RESULT_CHARS))
+        .join('\n'),
       notes: [],
       reportCalls: calls.slice(0, MAX_REPORTED_CALLS).map((call) => captureStepTurnText(call, MAX_REPORTED_CALL_CHARS)),
       reportOutcome: captureStepTurnText(outcome, MAX_REPORTED_OUTCOME_CHARS),

@@ -148,9 +148,11 @@ instruction, the strings in `agent.act` params, `agentContext`, and an
 on.
 
 Step records and app-log entries are redacted before their text is shortened
-for display. If a provider-backed secret resolves later, reports use the
-resolved value when they include those records. Progress already sent to a
-reporter is a point-in-time update and is not rewritten.
+for display when the original text is available. Model-turn text already cut
+before redaction is omitted when it could contain an incomplete secret. If a
+provider-backed secret resolves later, reports use the resolved value when
+they include those records. Progress already sent to a reporter is a
+point-in-time update and is not rewritten.
 
 | Rule | Detail |
 | --- | --- |

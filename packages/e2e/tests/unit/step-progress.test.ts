@@ -175,14 +175,24 @@ describe('StepRecorder late secret redaction', () => {
   });
 
   it('treats a literal truncation marker as ordinary text and never guesses a secret prefix', async () => {
-    const value = 'abc123-secret-value';
-    const ledger = new SecretLedger([['whole', value]]);
+    const ledger = new SecretLedger();
     const steps = new StepRecorder('attempt', { redactor: { redact: ledger.redact, revision: () => ledger.version } });
     await steps.run('agent', 'agent.act', 'inspect', async () => {
-      steps.attachAgentDetails({ turns: [{ index: 1, calls: [], outcome: `literal …[truncated] ${value}` }] });
+      steps.attachAgentDetails({ turns: [{ index: 1, calls: [], outcome: 'literal abcdefgh-unrelated…[truncated] suffix' }] });
     });
-    ledger.register('similar', 'abc123-unrelated');
-    expect(steps.all()[0]?.turns?.[0]?.outcome).toBe('literal …[truncated] <secret:whole>');
+    ledger.register('similar', 'abcdefgh-secret');
+    expect(steps.all()[0]?.turns?.[0]?.outcome).toBe('literal abcdefgh-unrelated…[truncated] suffix');
+  });
+
+  it('re-redacts cache details after a provider-backed secret resolves', async () => {
+    const value = 'late-cache-secret-0123456789';
+    const ledger = new SecretLedger();
+    const steps = new StepRecorder('attempt', { redactor: { redact: ledger.redact, revision: () => ledger.version } });
+    await steps.run('agent', 'agent.act', 'inspect', async () => {
+      steps.attachAgentDetails({ cache: { mode: 'missed', replayedActions: 0, totalActions: 1, detail: `missed at ${value}` } });
+    });
+    ledger.register('late', value);
+    expect(steps.all()[0]?.cache?.detail).toBe('missed at <secret:late>');
   });
 
   it('omits an already-truncated turn source that could contain only part of a long secret', async () => {

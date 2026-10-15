@@ -9,7 +9,7 @@
 
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { RunOutcome } from '../../src/run/runner.ts';
 import { startFixtureApp, type FixtureApp } from '../helpers/fixture-app.ts';
 import { fakeCalls, installFakeModel, judgment } from '../helpers/fake-model.ts';
@@ -57,11 +57,10 @@ describe.each([
     ));
   }, 120_000);
 
-  afterAll(async () => {
+  afterEach(async () => {
+    project?.cleanup();
     await app?.close();
   });
-
-  afterEach(() => project?.cleanup());
 
   it('keeps the cut fragment out of the model input and still cuts a plain value', () => {
     const observation = fakeCalls.map((call) => call.observation).join('\n');
