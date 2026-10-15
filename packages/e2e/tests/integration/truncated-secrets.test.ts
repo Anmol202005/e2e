@@ -26,7 +26,7 @@ const CONTROL_KEPT = 'plain-control-'.repeat(5).slice(0, 59);
 const SUITE = `import { test, credentials } from 'e2e';
 
 test('echoes a secret across the observation limits', async ({ app, agent, screen }) => {
-  await app.open('/echo-cut');
+  await app.open('/echo-cut?value=${SECRET}');
   await screen.getByLabel('Source').fill(credentials.user('member').password);
   await agent.assert('the echo is on screen');
   await screen.getByRole('button', { name: 'Not on this page' }).tap({ timeout: 500 });
@@ -48,7 +48,7 @@ describe('secrets cut short by observation limits', () => {
         config: {
           tests: 'tests/**/*.e2e.ts',
           agents: { default: { model } },
-          credentials: { member: { username: 'ada', password: SECRET } },
+          credentials: { member: { username: 'ada', password: () => SECRET } },
         },
       },
     ));
@@ -75,10 +75,13 @@ describe('secrets cut short by observation limits', () => {
     const screenText = readFileSync(path.join(project.dir, '.e2e', 'results', screen.path!), 'utf8');
     expect(screenText).toContain(`${CONTROL_KEPT}"`);
     const report = JSON.stringify(outcome.report);
+    const reportFile = readFileSync(path.join(project.dir, '.e2e', 'report.json'), 'utf8');
+    expect(attempt.appLog?.filter(({ text }) => text.includes('<secret:member.password>')).length).toBeGreaterThanOrEqual(2);
     const contents = contentsUnder(path.join(project.dir, '.e2e'));
     for (const fragment of [FRAGMENT, UPPER_FRAGMENT]) {
       expect(screenText).not.toContain(fragment);
       expect(report).not.toContain(fragment);
+      expect(reportFile).not.toContain(fragment);
       for (const [file, text] of contents) expect(text.includes(fragment), file).toBe(false);
     }
   });

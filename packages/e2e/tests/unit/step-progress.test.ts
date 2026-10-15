@@ -4,6 +4,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { StepRecorder, type StepProgress } from '../../src/run/steps.ts';
 import { AgentError } from '../../src/agent/error.ts';
+import { SecretLedger } from '../../src/internal/redact.ts';
 
 function recorder(): { steps: StepRecorder; heard: StepProgress[] } {
   const heard: StepProgress[] = [];
@@ -134,5 +135,40 @@ describe('StepRecorder progress identity', () => {
       { phase: 'start', label: 'inspect [REDACTED]' },
       { phase: 'end', label: 'inspect [REDACTED]' },
     ]);
+  });
+});
+
+describe('StepRecorder late secret redaction', () => {
+  it('rechecks completed steps, clipped details, app logs, and SDK-truncated turns when a secret resolves later', async () => {
+    const value = 'late-secret-0123456789-abcdefghijklmnop';
+    const prefix = value.slice(0, 8);
+    const ledger = new SecretLedger([['early', value.slice(0, 8)]]);
+    const steps = new StepRecorder('attempt', { redact: ledger.redact, redactCut: ledger.redactCut });
+    await steps.run('agent', 'agent.act', 'inspect', async () => {
+      steps.recordEvent({
+        kind: 'engine',
+        startedAt: new Date().toISOString(),
+        durationMs: 0,
+        status: 'passed',
+        detail: `${'x'.repeat(291)}${value}${'y'.repeat(30)}`,
+      });
+      steps.recordAppEvent({ kind: 'log', entry: { source: 'console', level: 'info', text: `${'x'.repeat(291)}${value}${'y'.repeat(30)}` } });
+      steps.attachAgentDetails({
+        explanation: `provider returned ${value}`,
+        turns: [{ index: 1, calls: [], outcome: `${'x'.repeat(20)}${prefix}…[truncated]` }],
+      });
+    });
+
+    ledger.register('late', value);
+    expect(ledger.redactCut(`${'x'.repeat(291)}${prefix}`)).toBe(`${'x'.repeat(291)}<secret:late>`);
+
+    const recorded = steps.all()[0]!;
+    expect(recorded.explanation).toBe('provider returned <secret:late>');
+    expect(JSON.stringify(recorded)).not.toContain('<secret:early>');
+    expect(recorded.events[0]?.detail).toContain('<secret:late>…');
+    expect(recorded.events[0]?.detail).not.toContain(prefix);
+    expect(recorded.turns?.[0]?.outcome).toBe(`${'x'.repeat(20)}<secret:late>…[truncated]`);
+    expect(steps.appLog()[0]?.text).toContain('<secret:late>…');
+    expect(steps.appLog()[0]?.text).not.toContain(prefix);
   });
 });

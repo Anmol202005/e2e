@@ -296,8 +296,10 @@ export interface StepRecorderOptions {
   readonly onProgress?: (progress: StepProgress) => void;
   /** The project root; with it, every step and step error names the test line it came from. */
   readonly projectRoot?: string;
-  /** Replaces secret values in a step's label, and in its error's message and details, before the record keeps them. */
+  /** Redacts text as records leave the recorder, using the latest session values. */
   readonly redact?: (text: string) => string;
+  /** Rechecks a recorded field that was clipped before a provider-backed secret was resolved. */
+  readonly redactCut?: (text: string) => string;
   /** Cuts every running step when it aborts: the step fails with the signal's error and its body is abandoned. */
   readonly signal?: AbortSignal;
 }
@@ -341,6 +343,18 @@ export const MAX_EVENT_DETAIL_CHARS = 300;
 /** Characters of a step label an error message quotes before clipping it. */
 const MAX_QUOTED_LABEL_CHARS = 80;
 
+/** Rechecks SDK-clipped turn prose against late values before any earlier marker can split a longer secret. */
+function redactTruncatedTurnText(text: string, redact: (text: string) => string, redactCut: ((text: string) => string) | undefined): string {
+  if (redactCut === undefined || !text.includes('…[truncated]')) return redact(text);
+  return text.replace(/(.*?)(…\[truncated\])/gs, (_match, prefix: string, marker: string) => `${redactCut(prefix)}${marker}`);
+}
+
+/** The runner's bounded fields keep a terminal ellipsis; remove it while matching the cut, then restore it. */
+function redactBoundedText(text: string, redactCut: ((text: string) => string) | undefined): string {
+  if (redactCut === undefined || !text.endsWith('…')) return redactCut?.(text) ?? text;
+  return `${redactCut(text.slice(0, -1))}…`;
+}
+
 function quoted(label: string): string {
   return `"${label.length > MAX_QUOTED_LABEL_CHARS ? `${label.slice(0, MAX_QUOTED_LABEL_CHARS - 3)}...` : label}"`;
 }
@@ -365,6 +379,10 @@ export class StepRecorder {
   private lastVerified = -1;
   /** What the app logged this attempt, within `APP_LOG_LIMITS`. */
   private readonly logged: AppLogRecord[] = [];
+  /** Fields whose stored text ended at a runner-imposed character limit. */
+  private readonly clipped = new WeakMap<object, Set<string>>();
+  /** Original bounded field values, kept private so a later ledger update can replace earlier markers. */
+  private readonly rawFields = new WeakMap<object, Map<string, unknown>>();
   /** App log entries of each kind `APP_LOG_LIMITS` counts, kept so far. */
   private readonly loggedCounts = { errorsAndWarnings: 0, info: 0 };
   /** The last screen each running step saw, read only when the step ends. */
@@ -377,6 +395,8 @@ export class StepRecorder {
   private readonly onProgress: ((progress: StepProgress) => void) | undefined;
   private readonly projectRoot: string | undefined;
   private readonly redact: ((text: string) => string) | undefined;
+  private readonly redactCut: ((text: string) => string) | undefined;
+  private readonly hasRedactCut: boolean;
   private readonly signal: AbortSignal | undefined;
 
   constructor(
@@ -388,6 +408,8 @@ export class StepRecorder {
     this.onProgress = options.onProgress;
     this.projectRoot = options.projectRoot;
     this.redact = options.redact;
+    this.hasRedactCut = options.redactCut !== undefined;
+    this.redactCut = options.redactCut ?? options.redact;
     this.signal = options.signal;
   }
 
@@ -419,8 +441,8 @@ export class StepRecorder {
     body: () => Promise<T>,
     options: StepRunOptions = {},
   ): Promise<T> {
-    // The label is published, reported, and traced as is: a secret the test
-    // spelled into an instruction or a locator stops here, once.
+    // Keep the source only inside this recorder; every progress or record view
+    // applies the live ledger before the label leaves it.
     const label = this.redact?.(rawLabel) ?? rawLabel;
     const index = this.steps.length;
     const startedAt = timestamp();
@@ -441,6 +463,7 @@ export class StepRecorder {
       ...(this.phase === undefined ? {} : { phase: this.phase }),
       artifacts: [],
     };
+    this.remember(record, 'label', rawLabel);
     this.steps.push(record);
     this.running.add(record.id);
     for (const { line, at } of this.earlyNavigations.splice(0)) this.fileNavigation(record, line, at);
@@ -476,7 +499,8 @@ export class StepRecorder {
           : isAgentError(cause) && cause.blocked
             ? 'blocked'
             : 'failed';
-      record.error = serializeError(error, { projectRoot: this.projectRoot, redact: this.redact });
+      record.error = serializeError(error, { projectRoot: this.projectRoot });
+      this.remember(record, 'error', record.error);
       throw cause;
     } finally {
       this.running.delete(record.id);
@@ -514,7 +538,8 @@ export class StepRecorder {
       this.abandoned.add(step.id);
       step.status = 'failed';
       step.durationMs = Math.max(0, Date.now() - Date.parse(step.startedAt));
-      step.error = serializeError(error, { projectRoot: this.projectRoot, redact: this.redact });
+      step.error = serializeError(error, { projectRoot: this.projectRoot });
+      this.remember(step, 'error', step.error);
       const promise = this.pending.get(step.id);
       if (promise !== undefined) {
         promise.catch(() => undefined);
@@ -531,16 +556,17 @@ export class StepRecorder {
   }
 
   private publishEnd(record: StepRecord): void {
+    const safe = this.redactRecord(record);
     this.publish(record, {
       phase: 'end',
       kind: record.kind,
       api: record.api,
-      label: record.label,
-      status: record.status,
-      durationMs: record.durationMs,
-      modelCalls: record.events.filter((event) => event.kind === 'model').length,
-      ...(record.error === undefined ? {} : { error: record.error }),
-      ...(record.explanation === undefined ? {} : { explanation: record.explanation }),
+      label: safe.label,
+      status: safe.status,
+      durationMs: safe.durationMs,
+      modelCalls: safe.events.filter((event) => event.kind === 'model').length,
+      ...(safe.error === undefined ? {} : { error: safe.error }),
+      ...(safe.explanation === undefined ? {} : { explanation: safe.explanation }),
     });
   }
 
@@ -587,13 +613,24 @@ export class StepRecorder {
     const counted = entry.level === 'info' ? 'info' : 'errorsAndWarnings';
     if (this.loggedCounts[counted] >= APP_LOG_LIMITS[counted]) return;
     this.loggedCounts[counted] += 1;
-    // Redacted before it is cut, so no cut leaves the head of a secret behind.
-    const text = bound(this.redactText(entry.text.replace(/\s+/g, ' ').trim()), MAX_EVENT_DETAIL_CHARS);
-    this.logged.push({ source: entry.source, level: entry.level, text, at, ...(target === undefined ? {} : { step: target.index }) });
+    // Keep a bounded source privately; each exposed view redacts before it applies the cut rule.
+    const normalized = entry.text.replace(/\s+/g, ' ').trim();
+    const redacted = this.redactText(normalized);
+    const record: AppLogRecord = {
+      source: entry.source,
+      level: entry.level,
+      text: bound(redacted, MAX_EVENT_DETAIL_CHARS),
+      at,
+      ...(target === undefined ? {} : { step: target.index }),
+    };
+    this.remember(record, 'text', bound(entry.text.replace(/\s+/g, ' ').trim(), MAX_EVENT_DETAIL_CHARS));
+    if (normalized.length > MAX_EVENT_DETAIL_CHARS) this.markClipped(record, 'text');
+    this.logged.push(record);
   }
 
   /** What the app logged this attempt, oldest first. */
   appLog(): readonly AppLogRecord[] {
+    for (const record of this.logged) this.redactRecord(record);
     return this.logged;
   }
 
@@ -634,6 +671,8 @@ export class StepRecorder {
     // Redacted before it is cut, so no cut leaves the head of a secret behind.
     const detail = event.detail === undefined ? undefined : (this.redact?.(event.detail) ?? event.detail);
     const redacted = detail === undefined ? event : { ...event, detail: bound(detail, MAX_EVENT_DETAIL_CHARS) };
+    if (event.detail !== undefined) this.remember(redacted, 'detail', bound(event.detail, MAX_EVENT_DETAIL_CHARS));
+    if (event.detail !== undefined && event.detail.length > MAX_EVENT_DETAIL_CHARS) this.markClipped(redacted, 'detail');
     step.events.push(redacted);
     this.publish(step, { phase: 'event', api: step.api, event: redacted });
   }
@@ -673,11 +712,15 @@ export class StepRecorder {
     }
     if (details.explanation !== undefined) {
       current.explanation = this.redact?.(details.explanation) ?? details.explanation;
+      this.remember(current, 'explanation', details.explanation);
     }
     if (details.visionInput !== undefined) current.visionInput = details.visionInput;
     if (details.visionDegraded !== undefined) current.visionDegraded = details.visionDegraded;
     if (details.visionOnly !== undefined) current.visionOnly = details.visionOnly;
-    if (details.turns !== undefined) current.turns = details.turns;
+    if (details.turns !== undefined) {
+      current.turns = details.turns;
+      this.remember(current, 'turns', details.turns);
+    }
   }
 
   /** Records the viewport a step established. */
@@ -687,12 +730,48 @@ export class StepRecorder {
   }
 
   all(): readonly StepRecord[] {
+    for (const step of this.steps) this.redactRecord(step);
     return this.steps;
   }
 
   /** Steps whose execution has finished, e.g. as prior-step prompt context. */
   completed(): readonly StepRecord[] {
+    for (const step of this.steps) this.redactRecord(step);
     return this.steps.filter((step) => !this.running.has(step.id));
+  }
+
+  /** Re-applies the live ledger before a record leaves the recorder, including after a late secret resolution. */
+  private redactRecord<T>(value: T, seen = new Set<object>()): T {
+    if (typeof value === 'string') return this.redactText(value) as T;
+    if (value === null || typeof value !== 'object' || seen.has(value)) return value;
+    seen.add(value);
+    const cutFields = this.clipped.get(value);
+    const rawFields = this.rawFields.get(value);
+    for (const [key, child] of Object.entries(value)) {
+      const hasRaw = rawFields?.has(key) === true;
+      const raw = hasRaw ? rawFields?.get(key) : child;
+      if (typeof raw === 'string') {
+        (value as Record<string, unknown>)[key] = cutFields?.has(key) === true
+          ? this.hasRedactCut ? redactBoundedText(raw, this.redactCut) : this.redactText(String(child))
+          : redactTruncatedTurnText(raw, (text) => this.redactText(text), this.redactCut);
+      } else {
+        const source = hasRaw && raw !== null && typeof raw === 'object' ? structuredClone(raw) : raw;
+        (value as Record<string, unknown>)[key] = this.redactRecord(source, seen);
+      }
+    }
+    return value;
+  }
+
+  private markClipped(value: object, key: string): void {
+    const fields = this.clipped.get(value) ?? new Set<string>();
+    fields.add(key);
+    this.clipped.set(value, fields);
+  }
+
+  private remember(value: object, key: string, raw: unknown): void {
+    const fields = this.rawFields.get(value) ?? new Map<string, unknown>();
+    fields.set(key, raw !== null && typeof raw === 'object' ? structuredClone(raw) : raw);
+    this.rawFields.set(value, fields);
   }
 
   private current(): StepRecord | undefined {

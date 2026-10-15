@@ -147,6 +147,11 @@ instruction, the strings in `agent.act` params, `agentContext`, and an
 `e2e explore` goal. A plain string isn't a secret fill, so screenshots stay
 on.
 
+When a provider-backed value resolves after a step or app-log entry was
+recorded, the runner rechecks those stored records when it returns `steps()`
+or builds the run report. The same cut-text rule below catches a prefix left
+at an SDK or runner length limit.
+
 | Rule | Detail |
 | --- | --- |
 | Forms matched | As written, JSON-escaped, HTML-escaped, and percent-encoded, in any letter case (so CSS `text-transform` doesn't hide it), and with whitespace collapsed. |

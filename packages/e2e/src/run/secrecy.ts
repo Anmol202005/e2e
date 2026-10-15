@@ -90,7 +90,7 @@ const staticLedgers = new WeakMap<ResolvedConfig['allSecrets'], SecretLedger>();
  * provider-backed value is not known yet and is not in it. Shared, so it is
  * handed out read-only: nothing registers into it.
  */
-export function staticSecretLedger(secrets: ResolvedConfig['allSecrets']): Pick<SecretLedger, 'redact' | 'entries'> {
+export function staticSecretLedger(secrets: ResolvedConfig['allSecrets']): Pick<SecretLedger, 'redact' | 'redactCut' | 'entries'> {
   let ledger = staticLedgers.get(secrets);
   if (ledger === undefined) {
     ledger = new SecretLedger(
@@ -187,6 +187,15 @@ export function redactForSession(
   text: string,
 ): string {
   return (session === undefined ? staticSecretLedger(secrets) : sessionSecrecy(session, secrets).ledger).redact(text);
+}
+
+/** Re-redacts a runner-clipped field with the session's latest values, including a secret prefix at the cut. */
+export function redactCutForSession(
+  session: TargetSession | undefined,
+  secrets: ResolvedConfig['allSecrets'],
+  text: string,
+): string {
+  return (session === undefined ? staticSecretLedger(secrets) : sessionSecrecy(session, secrets).ledger).redactCut(text);
 }
 
 /** What a saved session carries of the secrecy of the attempt that saved it. */
