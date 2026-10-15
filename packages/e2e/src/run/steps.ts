@@ -834,7 +834,7 @@ export class StepRecorder {
     const overflow = inputOverflow || text.length > sourceLimit;
     const source = text.slice(0, sourceLimit);
     const revision = this.redactor?.revision() ?? 0;
-    const initial = this.clipText(this.redactText(text), limit, style);
+    const initial = inputOverflow ? this.omittedText(limit, style) : this.clipText(this.redactText(text), limit, style);
     return { source, initial, revision, limit, overflow, style };
   }
 

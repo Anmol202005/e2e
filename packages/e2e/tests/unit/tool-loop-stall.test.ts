@@ -188,7 +188,7 @@ describe('tool loop step timeout', () => {
     await expect(fixtures.agent.act('read the output')).rejects.toMatchObject({ code: 'CONTEXT_OVERFLOW' });
 
     const outcome = steps.all()[0]!.turns![0]!.outcome;
-    expect(outcome).toContain('…[truncated]');
+    expect(outcome).toContain('[text omitted after redaction source limit]');
     expect(outcome.split('\n').at(-1)).toMatch(/^\[loop\] context overflow before turn 2/);
   });
 
@@ -206,6 +206,6 @@ describe('tool loop step timeout', () => {
     expect(outcome.length).toBeLessThanOrEqual(2048);
     // The tool's lookalike lines are clipped with its output; the loop's own
     // note stopping the repeated calls comes after the clip, whole.
-    expect(outcome).toMatch(/…\[truncated\]\n\[loop\] the step was stopped before turn 2: [^\n]+$/u);
+    expect(outcome).toMatch(/\[text omitted after redaction source limit\]\n\[loop\] the step was stopped before turn 2: [^\n]+$/u);
   });
 });

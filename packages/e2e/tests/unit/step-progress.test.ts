@@ -184,4 +184,19 @@ describe('StepRecorder late secret redaction', () => {
     ledger.register('similar', 'abc123-unrelated');
     expect(steps.all()[0]?.turns?.[0]?.outcome).toBe('literal …[truncated] <secret:whole>');
   });
+
+  it('omits an already-truncated turn source that could contain only part of a long secret', async () => {
+    const value = 'long-secret-'.repeat(100);
+    const ledger = new SecretLedger([['long', value]]);
+    const steps = new StepRecorder('attempt', { redactor: { redact: ledger.redact, revision: () => ledger.version } });
+    await steps.run('agent', 'agent.act', 'inspect', async () => {
+      steps.attachAgentDetails({
+        turns: [withStepTurnSources(
+          { index: 1, calls: [], outcome: value.slice(0, 100) },
+          { calls: [], outcome: { text: value.slice(0, 100), limit: 600, overflow: true } },
+        )],
+      });
+    });
+    expect(steps.all()[0]?.turns?.[0]?.outcome).not.toContain(value.slice(0, 20));
+  });
 });
