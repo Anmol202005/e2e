@@ -11,7 +11,8 @@
  * - model-call accounting and a step transcript for `--debug`.
  */
 
-import { captureStepTurnText, withStepTurnSources, type StepTurn, type StepTurnTextSource } from '../run/steps.ts';
+import { captureStepTurnText, type StepTurn, type StepTurnRecord, type StepTurnSources } from '../run/steps.ts';
+import { attachStepTurnRecords } from './turn-records.ts';
 import type { AssistantModelMessage, ModelMessage, StepResult, ToolCallPart, ToolSet } from 'ai';
 import { asSdkLanguageModel, loadAiSdk, type AiSdk, type SdkLanguageModel } from './ai-sdk.ts';
 import { MODEL_REQUEST_HEADERS } from '../internal/client-identity.ts';
@@ -84,8 +85,7 @@ interface LoopTurn extends StepTurn {
   /** Loop events after the turn (a resent request, a shrunk history), each prefixed with `LOOP_NOTE`. */
   notes: string[];
   /** Bounded source text for the report, retained separately from the transcript display. */
-  reportCalls: StepTurnTextSource[];
-  reportOutcome: StepTurnTextSource;
+  reportSources: StepTurnSources;
 }
 
 /**
@@ -456,8 +456,10 @@ class LoopRun {
       calls: calls.map((call) => truncate(call, MAX_TURN_CALL_CHARS)),
       outcome: truncate(outcome, MAX_TURN_TEXT_CHARS),
       notes: [],
-      reportCalls: calls.slice(0, MAX_REPORTED_CALLS).map((call) => captureStepTurnText(call, MAX_REPORTED_CALL_CHARS)),
-      reportOutcome: captureStepTurnText(outcome, MAX_REPORTED_OUTCOME_CHARS),
+      reportSources: {
+        calls: calls.slice(0, MAX_REPORTED_CALLS).map((call) => captureStepTurnText(call, MAX_REPORTED_CALL_CHARS)),
+        outcome: captureStepTurnText(outcome, MAX_REPORTED_OUTCOME_CHARS),
+      },
     });
     this.attachTranscript();
   }
@@ -717,8 +719,10 @@ class LoopRun {
         .map((part) => truncate(part, part.startsWith('assistant: ') ? MAX_TURN_TEXT_CHARS : MAX_TURN_RESULT_CHARS))
         .join('\n'),
       notes: [],
-      reportCalls: calls.slice(0, MAX_REPORTED_CALLS).map((call) => captureStepTurnText(call, MAX_REPORTED_CALL_CHARS)),
-      reportOutcome: captureStepTurnText(outcome, MAX_REPORTED_OUTCOME_CHARS),
+      reportSources: {
+        calls: calls.slice(0, MAX_REPORTED_CALLS).map((call) => captureStepTurnText(call, MAX_REPORTED_CALL_CHARS)),
+        outcome: captureStepTurnText(outcome, MAX_REPORTED_OUTCOME_CHARS),
+      },
     });
     // Attached as each turn ends, not only once the loop returns: a step the
     // clock ends settles without waiting for the loop, and keeps its turns.
@@ -739,17 +743,18 @@ class LoopRun {
   /** Hands the step its turns: the tail for the report, and every turn as the debug transcript. */
   private attachTranscript(): void {
     if (this.turns.length === 0 && this.preamble.length === 0) return;
-    this.context.attachTurns(
-      this.turns.slice(-MAX_REPORTED_TURNS).map((turn) => withStepTurnSources({
+    const reportTurns: StepTurnRecord[] = this.turns.slice(-MAX_REPORTED_TURNS).map((turn) => ({
+      turn: {
         index: turn.index,
         calls: turn.calls.slice(0, MAX_REPORTED_CALLS).map((call) => truncate(call, MAX_REPORTED_CALL_CHARS)),
         outcome: reportedOutcome(turn),
-      }, {
-        calls: turn.reportCalls,
-        outcome: turn.reportOutcome,
+      },
+      sources: {
+        ...turn.reportSources,
         ...(turn.notes.length === 0 ? {} : { notes: captureStepTurnText(turn.notes.join('\n'), MAX_REPORTED_NOTES_CHARS) }),
-      })),
-    );
+      },
+    }));
+    if (!attachStepTurnRecords(this.context, reportTurns)) this.context.attachTurns(reportTurns.map(({ turn }) => turn));
     const transcript = [
       ...this.preamble,
       ...this.turns.map((turn) => [`--- turn ${turn.index} ---`, ...turn.calls.map((call) => `tool call: ${call}`), turn.outcome, ...turn.notes].join('\n')),

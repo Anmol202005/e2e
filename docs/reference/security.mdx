@@ -147,12 +147,12 @@ instruction, the strings in `agent.act` params, `agentContext`, and an
 `e2e explore` goal. A plain string isn't a secret fill, so screenshots stay
 on.
 
-Step records and app-log entries are redacted before their text is shortened
-for display when the original text is available. Model-turn text already cut
-before redaction is omitted when it could contain an incomplete secret. If a
-provider-backed secret resolves later, reports use the resolved value when
-they include those records. Progress already sent to a reporter is a
-point-in-time update and is not rewritten.
+Step records, app logs, and model-turn evidence are redacted before they are
+shortened for display. If a provider-backed secret resolves later, returned
+records are redacted with that value too. A model turn already shortened
+before the runner receives it is omitted when its retained text could be only
+part of a longer secret. Progress already sent to a reporter is a point-in-time
+update and is not rewritten.
 
 | Rule | Detail |
 | --- | --- |

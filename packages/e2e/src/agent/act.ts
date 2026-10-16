@@ -40,6 +40,7 @@ import { appLocation } from '../cache/route.ts';
 import { OperationQueue } from './operation-queue.ts';
 import { StepAccounting } from './step-accounting.ts';
 import { failedStepOutcome, StepTraceSession, type StepCacheHost, type StepOutcome } from './step-cache.ts';
+import { registerStepTurnRecordSink } from './turn-records.ts';
 import type { ParamTemplate } from '../cache/template.ts';
 
 /** What a dispatch needs of the agent a step runs with; an interactive step supplies its own. */
@@ -272,7 +273,7 @@ class ActDispatch {
     );
     this.accounting.metrics.ledgerBytes = ledger.bytes;
     const replayedPrefix = this.stepCache?.replayedPrefix;
-    return {
+    const context: StepExecutorContext = {
       step: {
         kind: this.spec.kind,
         index: this.stepIndex,
@@ -320,6 +321,8 @@ class ActDispatch {
       attachScreenshot: (pixels, label) => this.attachScreenshot(pixels, label),
       actions: this.dispatcher.actions,
     };
+    registerStepTurnRecordSink(context, (turns) => this.runtime.steps.attachTurnRecords(turns));
+    return context;
   }
 
   /**

@@ -47,7 +47,7 @@ describe('StepRecorder.recordAppEvent', () => {
 
   it('redacts a line before cutting it to the report bound, and counts errors and info apart against their caps', async () => {
     const steps = new StepRecorder('attempt', {
-      redactor: { redact: (text) => text.replaceAll('hunter2', '[secret]'), revision: () => 0 },
+      redactor: { redact: (text) => text.replaceAll('hunter2', '[secret]'), revision: () => 0, maxFormLength: () => 7 },
     });
     await steps.run('app', 'app.open', '/', async () => {
       steps.recordAppEvent(log({ source: 'console', level: 'error', text: `${'x'.repeat(295)}hunter2 and more` }));

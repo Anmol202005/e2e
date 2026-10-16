@@ -91,7 +91,7 @@ const staticLedgers = new WeakMap<ResolvedConfig['allSecrets'], SecretLedger>();
  * provider-backed value is not known yet and is not in it. Shared, so it is
  * handed out read-only: nothing registers into it.
  */
-export function staticSecretLedger(secrets: ResolvedConfig['allSecrets']): Pick<SecretLedger, 'redact' | 'entries' | 'version'> {
+export function staticSecretLedger(secrets: ResolvedConfig['allSecrets']): Pick<SecretLedger, 'redact' | 'entries' | 'version' | 'maxFormLength'> {
   let ledger = staticLedgers.get(secrets);
   if (ledger === undefined) {
     ledger = new SecretLedger(
@@ -192,16 +192,18 @@ export function redactForSession(
 
 /** Supplies one live redactor object to the step recorder. */
 export function stepRedactorForSession(
-  session: TargetSession | (() => TargetSession | undefined),
+  session: () => TargetSession | undefined,
   secrets: ResolvedConfig['allSecrets'],
 ): StepTextRedactor {
-  const ledger = (): Pick<SecretLedger, 'redact' | 'version'> => {
-    const current = typeof session === 'function' ? session() : session;
+  const ledger = (): Pick<SecretLedger, 'redact' | 'version' | 'maxFormLength'> => {
+    const current = session();
+    // Session ledgers are seeded from this same static ledger before provider values are added.
     return current === undefined ? staticSecretLedger(secrets) : sessionSecrecy(current, secrets).ledger;
   };
   return {
     redact: (text) => ledger().redact(text),
     revision: () => ledger().version,
+    maxFormLength: () => ledger().maxFormLength,
   };
 }
 

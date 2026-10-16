@@ -190,31 +190,23 @@ export interface StepTurnTextSource {
   readonly overflow: boolean;
 }
 
-/** The original bounded sources for one report turn; kept behind a non-enumerable symbol on its display value. */
+/** The original bounded sources paired with one report turn during internal attachment. */
 export interface StepTurnSources {
   readonly calls: readonly StepTurnTextSource[];
   readonly outcome: StepTurnTextSource;
   readonly notes?: StepTurnTextSource;
 }
 
-const STEP_TURN_SOURCES = Symbol('e2e.step-turn-sources');
-type StepTurnWithSources = StepTurn & { readonly [STEP_TURN_SOURCES]?: StepTurnSources };
+/** A built-in model turn paired with its bounded source text for late redaction. */
+export interface StepTurnRecord {
+  readonly turn: StepTurn;
+  readonly sources: StepTurnSources;
+}
 
 /** Captures a bounded prefix and marks when the source exceeded its redaction margin. */
 export function captureStepTurnText(text: string, limit: number): StepTurnTextSource {
   const sourceLimit = limit + REDACTION_SOURCE_MARGIN_CHARS;
   return { text: text.slice(0, sourceLimit), limit, overflow: text.length > sourceLimit };
-}
-
-/** Associates bounded source metadata with a display turn without changing its public JSON shape. */
-export function withStepTurnSources(turn: StepTurn, sources: StepTurnSources): StepTurn {
-  Object.defineProperty(turn, STEP_TURN_SOURCES, { value: sources });
-  return turn;
-}
-
-/** Reads the internal source metadata attached by the built-in tool loop. */
-function stepTurnSources(turn: StepTurn): StepTurnSources | undefined {
-  return (turn as StepTurnWithSources)[STEP_TURN_SOURCES];
 }
 
 export interface StepRecord {
@@ -340,6 +332,7 @@ export interface StepRecorderOptions {
 export interface StepTextRedactor {
   redact(text: string): string;
   revision(): number;
+  maxFormLength(): number;
 }
 
 interface StoredText {
@@ -723,13 +716,13 @@ export class StepRecorder {
       return;
     }
     if (screen === undefined) return;
-    const next = compareScreens(this.lastScreen, screen);
-    const { location, changes, ...metadata } = next;
+    const next = compareScreens(this.lastScreen, screen, { includeRawChanges: true });
+    const { location, changes, rawChanges = changes, ...metadata } = next;
     const sources = this.sources.get(record.id)!;
     sources.screen = {
       metadata,
       ...(location === undefined ? {} : { location: this.captureText(location, undefined, 'plain') }),
-      changes: changes.map((change) => this.captureText(change, 200, 'bound')),
+      changes: rawChanges.map((change) => this.captureText(change, 200, 'bound')),
     };
     record.screen = { ...metadata, changes: [] };
     this.lastScreen = { step: record.index, screen };
@@ -805,8 +798,20 @@ export class StepRecorder {
   /** Stores the built-in executor's turns as bounded raw sources and a safe report view. */
   attachTurns(turns: readonly StepTurn[]): void {
     const current = this.current();
-    if (current === undefined) return;
-    const captured = turns.slice(-12).map((turn) => this.captureTurn(turn));
+    if (current === undefined || turns.length === 0) return;
+    this.storeTurns(current, turns.map((turn) => this.captureTurn(turn, undefined)));
+  }
+
+  /** Stores source-aware turns from the built-in executor. */
+  attachTurnRecords(turns: readonly StepTurnRecord[]): void {
+    const current = this.current();
+    if (current === undefined || turns.length === 0) return;
+    const captured = turns.map(({ turn, sources }) => this.captureTurn(turn, sources));
+    this.storeTurns(current, captured);
+  }
+
+  /** Saves private sources and updates the currently visible turn view. */
+  private storeTurns(current: StepRecord, captured: StoredTurn[]): void {
     this.sources.get(current.id)!.turns = captured;
     current.turns = captured.map((turn) => this.renderTurn(turn));
     this.invalidate(current);
@@ -830,6 +835,7 @@ export class StepRecorder {
     return this.steps.filter((step) => !this.running.has(step.id)).map((step) => this.safeRecord(step));
   }
 
+  /** Keeps a bounded private source and its safe initial display form. */
   private captureText(
     text: string,
     limit: number | undefined,
@@ -840,17 +846,19 @@ export class StepRecorder {
     const overflow = inputOverflow || text.length > sourceLimit;
     const source = text.slice(0, sourceLimit);
     const revision = this.redactor?.revision() ?? 0;
-    const initial = inputOverflow ? this.omittedText(limit, style) : this.clipText(this.redactText(text), limit, style);
+    const initial = overflow && !this.canRenderOverflow(limit)
+      ? this.omittedText(limit, style)
+      : this.clipText(this.redactText(source), limit, style);
     return { source, initial, revision, limit, overflow, style };
   }
 
-  private captureTurn(turn: StepTurn): StoredTurn {
-    const sources = stepTurnSources(turn);
+  /** Captures a turn's report sources without exposing the private originals. */
+  private captureTurn(turn: StepTurn, sources: StepTurnSources | undefined): StoredTurn {
     const calls = sources === undefined
-      ? turn.calls.map((text) => this.captureText(text, 200, 'turn'))
+      ? turn.calls.map((text) => this.captureText(text, text.length, 'turn'))
       : sources.calls.map((source) => this.captureText(source.text, source.limit, 'turn', source.overflow));
     const outcome = sources === undefined
-      ? this.captureText(turn.outcome, 600, 'turn')
+      ? this.captureText(turn.outcome, turn.outcome.length, 'turn')
       : this.captureText(sources.outcome.text, sources.outcome.limit, 'turn', sources.outcome.overflow);
     const notes = sources?.notes === undefined
       ? undefined
@@ -858,6 +866,7 @@ export class StepRecorder {
     return { index: turn.index, calls, outcome, ...(notes === undefined ? {} : { notes }) };
   }
 
+  /** Builds a report turn from the current redaction ledger. */
   private renderTurn(turn: StoredTurn): StepTurn {
     const outcome = this.renderText(turn.outcome);
     const notes = turn.notes === undefined ? undefined : this.renderText(turn.notes);
@@ -868,23 +877,32 @@ export class StepRecorder {
     };
   }
 
+  /** Re-redacts a retained source after the session learns another secret. */
   private renderText(source: StoredText): string {
     const revision = this.redactor?.revision() ?? 0;
     if (revision === source.revision) return source.initial;
-    if (source.overflow) return this.omittedText(source.limit, source.style);
+    if (source.overflow && !this.canRenderOverflow(source.limit)) return this.omittedText(source.limit, source.style);
     return this.clipText(this.redactText(source.source), source.limit, source.style);
   }
 
+  /** Returns whether the retained margin is long enough to redact a source that was cut upstream. */
+  private canRenderOverflow(limit: number | undefined): boolean {
+    return limit !== undefined && (this.redactor?.maxFormLength() ?? 0) <= REDACTION_SOURCE_MARGIN_CHARS;
+  }
+
+  /** Applies the display limit after redaction. */
   private clipText(text: string, limit: number | undefined, style: StoredText['style']): string {
     if (limit === undefined || text.length <= limit) return text;
     return style === 'bound' ? bound(text, limit) : `${text.slice(0, limit)}…[truncated]`;
   }
 
+  /** Returns the bounded omission marker for a source that cannot be safely re-redacted. */
   private omittedText(limit: number | undefined, style: StoredText['style']): string {
     if (limit === undefined) return REDACTION_OMITTED;
     return this.clipText(REDACTION_OMITTED, limit, style);
   }
 
+  /** Returns a cached safe record, rebuilding it when the record or ledger changes. */
   private safeRecord(record: StepRecord): StepRecord {
     const revision = this.redactor?.revision() ?? 0;
     const recordVersion = this.recordVersions.get(record.id) ?? 0;
